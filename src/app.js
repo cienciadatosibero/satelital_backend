@@ -1,38 +1,26 @@
 const express = require('express');
+const path = require('path');
 const cors = require('cors');
 const morgan = require('morgan');
-const http = require('http');
-const { Server } = require('socket.io');
+require('dotenv').config();
 
-const authRoutes = require('./routes/authRoutes');
-const actividadesRoutes = require('./routes/actividadesRoutes');
+const rutas = require('./routes');
+const { errorHandler, notFound } = require('./middlewares/errorHandler');
 
 const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: '*' } });
 
 app.use(cors());
-app.use(express.json());
 app.use(morgan('dev'));
+// Las capturas de mapa en base64 son grandes
+app.use(express.json({ limit: '60mb' }));
+app.use(express.urlencoded({ limit: '60mb', extended: true }));
 
-app.set('socketio', io);
+// Servir recortes guardados en disco (imágenes de detecciones)
+app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 
-app.use('/api/auth', authRoutes);
-app.use('/api/actividades', actividadesRoutes);
+app.use('/api', rutas);
 
-app.get('/', (req, res) => {
-  res.send('API Activity Modularizada');
-});
+app.use(notFound);
+app.use(errorHandler);
 
-app.use((req, res) => {
-  res.status(404).json({
-    status: 'error',
-    mensaje: 'Ruta no encontrada',
-  });
-});
-
-const PORT = process.env.PORT || 3000;
-
-server.listen(PORT, () => {
-  console.log(`Servidor en puerto ${PORT}`);
-});
+module.exports = app;

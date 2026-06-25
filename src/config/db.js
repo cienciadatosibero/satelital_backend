@@ -1,30 +1,28 @@
 const mysql = require('mysql2/promise');
-// Esto permite que el código lea tu archivo .env localmente
-require('dotenv').config(); 
+require('dotenv').config();
+
+const useSSL = String(process.env.DB_SSL).toLowerCase() === 'true';
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  port: process.env.DB_PORT || 12980,
+  port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  // Aiven requiere SSL por seguridad, esto es vital
-  ssl: {
-    rejectUnauthorized: false 
-  }
+  ...(useSSL ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 
-// Prueba de conexión rápida
+// Prueba de conexión al arrancar
 (async () => {
   try {
-    const connection = await pool.getConnection();
-    console.log('✅ Conexión exitosa a la base de datos en Aiven');
-    connection.release();
-  } catch (error) {
-    console.error('❌ Error de conexión:', error.message);
+    const conn = await pool.getConnection();
+    console.log('✅ Conexión a MySQL establecida');
+    conn.release();
+  } catch (err) {
+    console.error('❌ Error de conexión a MySQL:', err.message);
   }
 })();
 
