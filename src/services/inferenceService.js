@@ -36,7 +36,7 @@ const InferenciaService = {
   },
 
   async estado() {
-    const { data } = await cliente.get('/health');
+    const { data } = await cliente.get('/health', { timeout: 5000 });
     return data;
   },
 };

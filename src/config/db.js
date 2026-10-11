@@ -30,12 +30,13 @@ const pool = mysql.createPool({
   database: process.env.DB_NAME,
   port: Number(process.env.DB_PORT) || 3306,
   waitForConnections: true,
-  connectionLimit: 10,
+  connectTimeout: 8000,
+  connectionLimit: process.env.VERCEL ? 2 : 10,
   queueLimit: 0,
   ...(useSSL ? { ssl: buildSslConfig() } : {}),
 });
 
-(async () => {
+if (!process.env.VERCEL) (async () => {
   try {
     const conn = await pool.getConnection();
     console.log('✅ Conexión a MySQL establecida');

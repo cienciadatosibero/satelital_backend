@@ -30,6 +30,10 @@ async function detectar(req, res, next) {
   try {
     const { imagen_base64, bounds, zoom, confianza, guardar, nombre_sesion } = req.body;
 
+    if (process.env.VERCEL && guardar) {
+      return res.status(501).json({ success: false, message: 'No se pueden guardar datasets como archivos locales en Vercel. Requiere almacenamiento persistente (por ejemplo Blob o S3). Prueba detección sin guardar mientras se configura.' });
+    }
+
     if (!imagen_base64) {
       return res.status(400).json({ success: false, message: 'Falta la imagen capturada' });
     }
@@ -149,6 +153,11 @@ async function detectarArea(req, res, next) {
 
   try {
     const { bounds, lado_px, zoom, confianza, guardar = true, nombre_sesion } = req.body;
+
+    if (process.env.VERCEL && guardar) {
+      enviar('error', { message: 'El guardado permanente de imágenes requiere almacenamiento externo; Vercel no permite escribir en uploads. Desactiva guardar mientras se configura.' });
+      return res.end();
+    }
 
     if (!bounds || ['north', 'south', 'east', 'west'].some((k) =>
       bounds[k] == null || !Number.isFinite(Number(bounds[k])))) {

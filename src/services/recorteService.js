@@ -11,7 +11,8 @@
 
 const fs = require('fs');
 const path = require('path');
-const sharp = require('sharp');
+// Cargar sharp solo al procesar imágenes, no durante el arranque del login.
+function sharp(...args) { return require('sharp')(...args); }
 
 const RAIZ = path.join(__dirname, '..', '..', 'uploads', 'recortes');
 

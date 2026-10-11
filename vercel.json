@@ -13,7 +13,7 @@
     "JWT_SECRET": "SATDATASET_SUPER_SECRET_2026_VERCEL_LOGIN",
     "JWT_EXPIRES": "8h",
     "CORS_ORIGIN": "https://satelital.vercel.app",
-    "INFERENCE_URL": "http://localhost:8000",
+    "INFERENCE_URL": "https://inferencia-bay.vercel.app",
     "YOLO_IMGSZ": "960",
     "SEED_ADMIN_USER": "admin",
     "SEED_ADMIN_PASSWORD": "admin123"

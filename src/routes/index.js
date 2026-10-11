@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 
 const { requireAuth, requireRole } = require('../middlewares/auth');
-const { uploadPesos } = require('../middlewares/upload');
+const { uploadPesos, requiereAlmacenamientoDeModelos } = require('../middlewares/upload');
 
 const auth = require('../controllers/authController');
 const usuarios = require('../controllers/usuarioController');
@@ -28,6 +28,7 @@ router.post(
   '/modelos',
   requireAuth,
   requireRole('admin'),
+  requiereAlmacenamientoDeModelos,
   uploadPesos.single('peso'),
   modelos.subir
 );
@@ -49,14 +50,15 @@ router.post('/almacenamiento/optimizar', requireAuth, requireRole('admin'), alma
 
 // ---------- Salud ----------
 router.get('/health', async (req, res) => {
-  let inferencia = false;
-  try {
-    const r = await Inferencia.estado();
-    inferencia = !!r.ok;
-  } catch {
-    inferencia = false;
-  }
-  res.json({ success: true, data: { api: true, inferencia } });
+  const pool = require('../config/db');
+  const [db, inferencia] = await Promise.all([
+    pool.query('SELECT 1 AS ok').then(() => true).catch((e) => {
+      console.error('Health DB:', e.code || e.message);
+      return false;
+    }),
+    Inferencia.estado().then((r) => Boolean(r.ok)).catch(() => false),
+  ]);
+  res.status(db ? 200 : 503).json({ success: db, data: { api: true, db, inferencia } });
 });
 
 module.exports = router;

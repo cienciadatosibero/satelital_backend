@@ -26,6 +26,7 @@ app.use(express.urlencoded({ limit: '60mb', extended: true }));
 // Las imágenes permanecen accesibles por URL a quien conozca su enlace.
 app.use('/uploads/recortes', express.static(path.join(__dirname, '..', 'uploads', 'recortes')));
 
+app.get('/', (req, res) => res.json({ success: true, service: 'satdataset-api', health: '/api/health' }));
 app.use('/api', rutas);
 
 app.use(notFound);
