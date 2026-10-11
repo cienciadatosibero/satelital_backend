@@ -9,7 +9,14 @@ const { errorHandler, notFound } = require('./middlewares/errorHandler');
 
 const app = express();
 
-app.use(cors());
+const allowedOrigins = String(process.env.CORS_ORIGIN || '').split(',').map(v => v.trim()).filter(Boolean);
+app.use(cors({
+  origin(origin, callback) {
+    if (!origin || allowedOrigins.length === 0 || allowedOrigins.includes(origin)) return callback(null, true);
+    return callback(new Error('Origen no permitido por CORS'));
+  },
+  credentials: true,
+}));
 app.use(morgan('dev'));
 // Las capturas de mapa en base64 son grandes
 app.use(express.json({ limit: '60mb' }));

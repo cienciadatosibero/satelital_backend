@@ -1,7 +1,27 @@
+const fs = require('fs');
+const path = require('path');
 const mysql = require('mysql2/promise');
-require('dotenv').config();
+
+require('dotenv').config({ path: path.resolve(process.cwd(), '.env') });
+require('dotenv').config({ path: path.resolve(process.cwd(), '.env.production'), override: false });
 
 const useSSL = String(process.env.DB_SSL).toLowerCase() === 'true';
+
+function buildSslConfig() {
+  if (!useSSL) return undefined;
+
+  const caPath = process.env.DB_SSL_CA_PATH;
+  const caText = process.env.DB_SSL_CA;
+  const ssl = { rejectUnauthorized: true };
+
+  if (caPath && caPath !== '<CA_PATH>' && fs.existsSync(caPath)) {
+    ssl.ca = fs.readFileSync(caPath, 'utf8');
+  } else if (caText && caText !== '<CA_PATH>') {
+    ssl.ca = caText;
+  }
+
+  return ssl;
+}
 
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
@@ -12,10 +32,9 @@ const pool = mysql.createPool({
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0,
-  ...(useSSL ? { ssl: { rejectUnauthorized: true } } : {}),
+  ...(useSSL ? { ssl: buildSslConfig() } : {}),
 });
 
-// Prueba de conexión al arrancar
 (async () => {
   try {
     const conn = await pool.getConnection();
