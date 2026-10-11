@@ -1,4 +1,5 @@
 const { rutaPeso } = require('../services/modelPathService');
+const { ID_RE } = require('./modeloTemporalController');
 const { Sesion, Deteccion, Celda } = require('../models/sesionModel');
 const Modelo = require('../models/modeloModel');
 const Inferencia = require('../services/inferenceService');
@@ -28,8 +29,14 @@ async function asegurarModelo(modelo) {
 async function detectar(req, res, next) {
   let sesionId = null;
   try {
-    const { imagen_base64, bounds, zoom, confianza, guardar, nombre_sesion } = req.body;
+    const { imagen_base64, bounds, zoom, confianza, guardar, nombre_sesion, temp_model_id } = req.body;
 
+    if (temp_model_id && (!ID_RE.test(temp_model_id) || req.usuario.rol !== 'admin')) {
+      return res.status(403).json({ success: false, message: 'Modelo temporal inválido o sin permiso' });
+    }
+    if (temp_model_id && guardar) {
+      return res.status(400).json({ success: false, message: 'El modo temporal no guarda archivos ni sesiones. Usa guardar:false.' });
+    }
     if (process.env.VERCEL && guardar) {
       return res.status(501).json({ success: false, message: 'No se pueden guardar datasets como archivos locales en Vercel. Requiere almacenamiento persistente (por ejemplo Blob o S3). Prueba detección sin guardar mientras se configura.' });
     }
@@ -53,15 +60,16 @@ async function detectar(req, res, next) {
       return res.status(400).json({ success: false, message: 'Confianza inválida (0.05 a 0.95)' });
     }
 
-    const modeloActivo = await Modelo.buscarActivo();
-    if (!modeloActivo) return res.status(409).json({ success: false, message: 'No hay modelo activo' });
-    await asegurarModelo(modeloActivo);
+    const modeloActivo = temp_model_id ? null : await Modelo.buscarActivo();
+    if (!temp_model_id && !modeloActivo) return res.status(409).json({ success: false, message: 'No hay modelo activo' });
+    if (!temp_model_id) await asegurarModelo(modeloActivo);
 
     // 1) Inferencia en el microservicio Python
     const resultado = await Inferencia.detectar({
       imagenBase64: imagen_base64,
       confianza: confianza == null ? (modeloActivo?.conf_default ?? 0.25) : Number(confianza),
       devolverRecortes: true,
+      tempModelId: temp_model_id || null,
     });
 
     const imgW = resultado.image_width;
@@ -133,12 +141,17 @@ async function detectar(req, res, next) {
     });
   } catch (err) {
     next(err);
+  } finally {
+    if (req.body?.temp_model_id && ID_RE.test(req.body.temp_model_id)) {
+      await Inferencia.liberarModeloTemporal(req.body.temp_model_id).catch((e) => console.error('No se liberó modelo temporal:', e.message));
+    }
   }
 }
 
 async function detectarArea(req, res, next) {
   const t0 = Date.now();
   let sesionId = null;
+  const tempId = req.body?.temp_model_id;
 
   // SSE: emitimos progreso celda por celda. El cliente usa fetch + stream.
   res.setHeader('Content-Type', 'text/event-stream');
@@ -154,6 +167,14 @@ async function detectarArea(req, res, next) {
   try {
     const { bounds, lado_px, zoom, confianza, guardar = true, nombre_sesion } = req.body;
 
+    if (tempId && (!ID_RE.test(tempId) || req.usuario.rol !== 'admin')) {
+      enviar('error', { message: 'Modelo temporal inválido o sin permiso' });
+      return res.end();
+    }
+    if (tempId && guardar) {
+      enviar('error', { message: 'Desactiva guardar para usar un modelo temporal' });
+      return res.end();
+    }
     if (process.env.VERCEL && guardar) {
       enviar('error', { message: 'El guardado permanente de imágenes requiere almacenamiento externo; Vercel no permite escribir en uploads. Desactiva guardar mientras se configura.' });
       return res.end();
@@ -184,12 +205,12 @@ async function detectarArea(req, res, next) {
       zoom: Number(zoom) || ZOOM_ESCANEO,
     });
 
-    const modeloActivo = await Modelo.buscarActivo();
-    if (!modeloActivo) {
+    const modeloActivo = tempId ? null : await Modelo.buscarActivo();
+    if (!tempId && !modeloActivo) {
       enviar('error', { message: 'No hay modelo activo' });
       return res.end();
     }
-    await asegurarModelo(modeloActivo);
+    if (!tempId) await asegurarModelo(modeloActivo);
 
     enviar('inicio', {
       total_celdas: plan.total,
@@ -219,6 +240,7 @@ async function detectarArea(req, res, next) {
       const img = await capturarCelda(celda);
       const r = await Inferencia.detectar({
         imagenBase64: img.base64, confianza: conf, devolverRecortes: false,
+        tempModelId: tempId || null,
       });
       for (const d of r.detections || []) {
         if (![d.x, d.y, d.w, d.h, d.confidence].every(Number.isFinite) || d.w <= 0 || d.h <= 0) continue;
@@ -246,6 +268,7 @@ async function detectarArea(req, res, next) {
       const foto = await capturarCentrada(lat, lng, { ladoPx: 600, zoom: plan.zoom });
       const r2 = await Inferencia.detectar({
         imagenBase64: foto.base64, confianza: conf, devolverRecortes: false,
+        tempModelId: tempId || null,
       });
       const match = asociarSegundaPasada(r2.detections, d, foto.width, foto.height);
       // Si la segunda pasada no encuentra la misma clase cercana al centro,
@@ -337,6 +360,10 @@ async function detectarArea(req, res, next) {
       res.end();
     } catch {
       next(err);
+    }
+  } finally {
+    if (tempId && ID_RE.test(tempId)) {
+      await Inferencia.liberarModeloTemporal(tempId).catch((e) => console.error('No se liberó modelo temporal:', e.message));
     }
   }
 }

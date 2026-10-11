@@ -11,6 +11,11 @@ const Modelo = {
     return rows;
   },
 
+  async buscarPorArchivo(archivo) {
+    const [rows] = await pool.query('SELECT * FROM modelos WHERE archivo = ? LIMIT 1', [archivo]);
+    return rows[0] || null;
+  },
+
   async buscarPorId(id) {
     const [rows] = await pool.query('SELECT * FROM modelos WHERE id = ? LIMIT 1', [id]);
     return rows[0] || null;

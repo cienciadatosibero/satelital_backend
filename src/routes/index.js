@@ -7,6 +7,7 @@ const { uploadPesos, requiereAlmacenamientoDeModelos } = require('../middlewares
 const auth = require('../controllers/authController');
 const usuarios = require('../controllers/usuarioController');
 const modelos = require('../controllers/modeloController');
+const modeloTemporal = require('../controllers/modeloTemporalController');
 const det = require('../controllers/deteccionController');
 const almacenamiento = require('../controllers/almacenamientoController');
 const Inferencia = require('../services/inferenceService');
@@ -20,6 +21,10 @@ router.get('/usuarios', requireAuth, requireRole('admin'), usuarios.listar);
 router.post('/usuarios', requireAuth, requireRole('admin'), usuarios.crear);
 router.put('/usuarios/:id', requireAuth, requireRole('admin'), usuarios.actualizar);
 router.delete('/usuarios/:id', requireAuth, requireRole('admin'), usuarios.eliminar);
+
+// ---------- Modelo temporal para un solo escaneo (sin R2 ni TiDB) ----------
+router.post('/modelos/temporal/ticket', requireAuth, requireRole('admin'), modeloTemporal.ticket);
+router.post('/modelos/temporal/release', requireAuth, requireRole('admin'), modeloTemporal.liberar);
 
 // ---------- Modelos / pesos ----------
 router.get('/modelos', requireAuth, modelos.listar);
