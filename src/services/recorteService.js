@@ -61,7 +61,9 @@ async function guardarDeteccion(sesionId, indice, base64, caja) {
   const w = Math.min(W - x, caja.w);
   const h = Math.min(H - y, caja.h);
   const pct = Math.round((caja.conf || 0) * 100);
-  const etiqueta = `${caja.clase} ${pct}%`;
+  const etiqueta = `${caja.clase} ${pct}%`.replace(/[&<>"']/g, (char) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;'
+  })[char]);
 
   // Posición del texto: encima de la caja, o dentro si no cabe arriba
   const textoY = y > 22 ? y - 6 : y + 18;
@@ -82,7 +84,8 @@ async function guardarDeteccion(sesionId, indice, base64, caja) {
     .jpeg({ quality: 90 })
     .toBuffer();
 
-  const nombre = `det_${String(indice).padStart(5, '0')}.jpg`;
+  // No reutilizar el nombre de la foto limpia: la anotada la sobrescribiría.
+  const nombre = `marcada_${String(indice).padStart(5, '0')}.jpg`;
   const dir = carpetaSesion(sesionId);
   fs.writeFileSync(path.join(dir, nombre), out);
   return `/uploads/recortes/${sesionId}/${nombre}`;

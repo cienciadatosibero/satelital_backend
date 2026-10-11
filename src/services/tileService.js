@@ -48,7 +48,13 @@ const ZOOM_ESCANEO = 20;
 // píxeles a ZOOM FIJO (nítido). El área SOLO define el territorio; el zoom no
 // depende del tamaño del área. Cada segmento trae sus bounds geográficos.
 // ---------------------------------------------------------------------------
-function planificarCeldas(bounds, { ladoPx = 640, zoom = ZOOM_ESCANEO } = {}) {
+function planificarCeldas(bounds, { ladoPx = 640, zoom = ZOOM_ESCANEO, solape = 0.15 } = {}) {
+  if (!Number.isFinite(Number(ladoPx)) || ladoPx < 256 || ladoPx > 1024) {
+    throw new Error('lado_px debe estar entre 256 y 1024');
+  }
+  if (!Number.isFinite(Number(zoom)) || zoom < 1 || zoom > 21) {
+    throw new Error('Zoom fuera del rango admitido (1-21)');
+  }
   const z = Math.max(1, Math.min(21, Math.round(zoom)));
 
   // Esquinas en píxeles mundiales (256 * unidad-de-tile) al zoom fijo
@@ -60,9 +66,15 @@ function planificarCeldas(bounds, { ladoPx = 640, zoom = ZOOM_ESCANEO } = {}) {
   const anchoPx = Math.abs(pxEste - pxOeste);
   const altoPx = Math.abs(pxSur - pxNorte);
 
-  const cols = Math.max(1, Math.ceil(anchoPx / ladoPx));
-  const filas = Math.max(1, Math.ceil(altoPx / ladoPx));
+  // Ventanas con solape para no perder paneles cortados por el borde de una tesela.
+  const paso = Math.round(ladoPx * (1 - Math.min(0.4, Math.max(0, solape))));
+  const cols = Math.max(1, Math.ceil(Math.max(0, anchoPx - ladoPx) / paso) + 1);
+  const filas = Math.max(1, Math.ceil(Math.max(0, altoPx - ladoPx) / paso) + 1);
   const total = cols * filas;
+  const limite = Number(process.env.MAX_CELDAS_ESCANEO) || 2500;
+  if (total > limite) {
+    throw new Error(`Área demasiado grande al zoom seleccionado (${total} celdas; máximo ${limite}). Reduce el rectángulo.`);
+  }
 
   const x0 = Math.min(pxOeste, pxEste);
   const y0 = Math.min(pxNorte, pxSur);
@@ -70,8 +82,8 @@ function planificarCeldas(bounds, { ladoPx = 640, zoom = ZOOM_ESCANEO } = {}) {
   const celdas = [];
   for (let f = 0; f < filas; f++) {
     for (let c = 0; c < cols; c++) {
-      const px1 = x0 + c * ladoPx;
-      const py1 = y0 + f * ladoPx;
+      const px1 = x0 + c * paso;
+      const py1 = y0 + f * paso;
       const px2 = px1 + ladoPx;
       const py2 = py1 + ladoPx;
 
@@ -86,7 +98,7 @@ function planificarCeldas(bounds, { ladoPx = 640, zoom = ZOOM_ESCANEO } = {}) {
     }
   }
 
-  return { zoom: z, cols, filas, total, ladoPx, celdas };
+  return { zoom: z, cols, filas, total, ladoPx, paso, celdas };
 }
 
 // ---------------------------------------------------------------------------
@@ -181,7 +193,7 @@ async function capturarCelda(celda) {
   cropH = Math.max(1, cropH);
 
   const jpg = await lienzo
-    .jpeg({ quality: 88 })
+    .png() // preservar píxeles antes del recorte: evita doble compresión JPEG
     .toBuffer()
     .then((buf) =>
       sharp(buf)
@@ -191,7 +203,7 @@ async function capturarCelda(celda) {
           width: cropW,
           height: cropH,
         })
-        .jpeg({ quality: 88 })
+        .jpeg({ quality: 92 })
         .toBuffer()
     );
 

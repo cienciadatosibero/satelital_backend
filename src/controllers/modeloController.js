@@ -1,5 +1,6 @@
 const path = require('path');
 const fs = require('fs');
+const { rutaPeso, esPesoSubido } = require('../services/modelPathService');
 const Modelo = require('../models/modeloModel');
 const Inferencia = require('../services/inferenceService');
 
@@ -48,7 +49,8 @@ async function subir(req, res, next) {
       archivo: req.file.filename,
       framework,
       clases,
-      confDefault: Number(conf_default) || 0.25,
+      confDefault: Number.isFinite(Number(conf_default)) && conf_default !== ''
+        ? Number(conf_default) : 0.25,
       subidoPor: req.usuario.id,
     });
 
@@ -65,14 +67,22 @@ async function activar(req, res, next) {
     const m = await Modelo.buscarPorId(id);
     if (!m) return res.status(404).json({ success: false, message: 'Modelo no encontrado' });
 
-    const rutaAbs = path.join(dirPesos, m.archivo);
-    if (!fs.existsSync(rutaAbs)) {
+    const rutaAbs = rutaPeso(m.archivo);
+    if (!rutaAbs) {
       return res
         .status(410)
         .json({ success: false, message: 'El archivo del peso ya no existe en el servidor' });
     }
 
-    await Inferencia.activarModelo(rutaAbs);
+    try {
+      await Inferencia.activarModelo(rutaAbs);
+    } catch (error) {
+      if (error.response?.status === 400 || error.response?.status === 404) {
+        return res.status(409).json({ success: false, message:
+          'El microservicio de inferencia no puede abrir ese .pt. Si está desplegado por separado, el peso debe existir también en ese servidor; las rutas del API no son compartidas.' });
+      }
+      throw error;
+    }
     await Modelo.activar(id);
     res.json({ success: true, message: 'Modelo activado' });
   } catch (err) {
@@ -100,8 +110,9 @@ async function eliminar(req, res, next) {
     const { id } = req.params;
     const m = await Modelo.buscarPorId(id);
     if (m) {
-      const rutaAbs = path.join(dirPesos, m.archivo);
-      if (fs.existsSync(rutaAbs)) fs.unlinkSync(rutaAbs);
+      const rutaAbs = rutaPeso(m.archivo);
+      // Un peso incluido en el repositorio no debe eliminarse del sistema.
+      if (esPesoSubido(rutaAbs) && fs.existsSync(rutaAbs)) fs.unlinkSync(rutaAbs);
       await Modelo.eliminar(id);
     }
     res.json({ success: true, message: 'Modelo eliminado' });

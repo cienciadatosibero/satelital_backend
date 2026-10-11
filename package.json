@@ -4,8 +4,12 @@
   "description": "API del Generador de Datasets Satelitales",
   "main": "src/server.js",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node scripts/start-all.js",
+    "api": "node src/server.js",
+    "inference": "python src/inference_server.py",
+    "setup-db": "node scripts/setup-database.js",
     "dev": "nodemon src/server.js",
+    "test": "node --test test/*.test.js",
     "seed": "node src/seed.js"
   },
   "dependencies": {

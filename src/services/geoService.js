@@ -1,27 +1,22 @@
-// Convierte una caja en píxeles (sobre la captura del mapa) a coordenadas
-// geográficas, usando los límites (bounds) del mapa visible al momento de
-// la captura. Es una interpolación lineal: válida para zooms altos donde el
-// área cubierta es pequeña y la distorsión de Mercator es despreciable.
-//
-// bounds: { north, south, east, west }  (lat/lng de los bordes de la captura)
-// imgW, imgH: dimensiones en píxeles de la imagen capturada
-// bbox: { x, y, w, h } en píxeles (esquina superior izquierda + tamaño)
-//
-// Devuelve el centro de la caja en { lat, lng }.
-function pixelABoundsLatLng(bounds, imgW, imgH, bbox) {
-  const cx = bbox.x + bbox.w / 2;
-  const cy = bbox.y + bbox.h / 2;
+// Coordenadas precisas sobre imágenes de teselas Web Mercator (EPSG:3857).
+// Interpolar la latitud en grados introduce errores: se debe interpolar la Y de Mercator.
+const LAT_MAX = 85.05112878;
 
-  const fracX = cx / imgW; // 0 = oeste, 1 = este
-  const fracY = cy / imgH; // 0 = norte, 1 = sur
-
-  const lng = bounds.west + (bounds.east - bounds.west) * fracX;
-  const lat = bounds.north - (bounds.north - bounds.south) * fracY;
-
-  return {
-    lat: Number(lat.toFixed(7)),
-    lng: Number(lng.toFixed(7)),
-  };
+function latAY(lat) {
+  const rad = Math.max(-LAT_MAX, Math.min(LAT_MAX, Number(lat))) * Math.PI / 180;
+  return Math.log(Math.tan(Math.PI / 4 + rad / 2));
 }
-
+function yALat(y) {
+  return (2 * Math.atan(Math.exp(y)) - Math.PI / 2) * 180 / Math.PI;
+}
+function pixelABoundsLatLng(bounds, imgW, imgH, bbox) {
+  if (!Number.isFinite(imgW) || !Number.isFinite(imgH) || imgW <= 0 || imgH <= 0) {
+    throw new Error('Dimensiones de imagen inválidas');
+  }
+  const fx = Math.min(1, Math.max(0, (bbox.x + bbox.w / 2) / imgW));
+  const fy = Math.min(1, Math.max(0, (bbox.y + bbox.h / 2) / imgH));
+  const lng = Number(bounds.west) + (Number(bounds.east) - Number(bounds.west)) * fx;
+  const y = latAY(bounds.north) + (latAY(bounds.south) - latAY(bounds.north)) * fy;
+  return { lat: Number(yALat(y).toFixed(8)), lng: Number(lng.toFixed(8)) };
+}
 module.exports = { pixelABoundsLatLng };

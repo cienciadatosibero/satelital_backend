@@ -33,7 +33,7 @@ const Modelo = {
         archivo,
         framework || 'yolo',
         clases ? JSON.stringify(clases) : null,
-        confDefault || 0.25,
+        confDefault ?? 0.25,
         subidoPor || null,
       ]
     );

@@ -5,9 +5,13 @@ const pool = require('./config/db');
 
 async function seed() {
   const usuarios = [
-    { nombre: 'Administrador', usuario: 'admin', password: 'admin123', rol: 'admin' },
-    { nombre: 'Invitado Demo', usuario: 'invitado', password: 'invitado123', rol: 'invitado' },
+    { nombre: 'Administrador', usuario: process.env.SEED_ADMIN_USER || 'admin', password: process.env.SEED_ADMIN_PASSWORD, rol: 'admin' },
+    ...(process.env.SEED_INVITADO_PASSWORD ? [{ nombre: 'Invitado', usuario: process.env.SEED_INVITADO_USER || 'invitado', password: process.env.SEED_INVITADO_PASSWORD, rol: 'invitado' }] : []),
   ];
+
+  if (!usuarios[0].password || usuarios[0].password.length < 12) {
+    throw new Error('Define SEED_ADMIN_PASSWORD con al menos 12 caracteres antes de ejecutar npm run seed');
+  }
 
   for (const u of usuarios) {
     const hash = await bcrypt.hash(u.password, 10);
@@ -17,7 +21,7 @@ async function seed() {
        ON DUPLICATE KEY UPDATE password_hash = VALUES(password_hash), rol = VALUES(rol), nombre = VALUES(nombre)`,
       [u.nombre, u.usuario, hash, u.rol]
     );
-    console.log(`✔ Usuario "${u.usuario}" listo (contraseña: ${u.password})`);
+    console.log(`✔ Usuario "${u.usuario}" listo`);
   }
 
   console.log('\nSeed completado. Cambia las contraseñas tras el primer login.');

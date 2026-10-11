@@ -4,6 +4,9 @@ const INFERENCE_URL = process.env.INFERENCE_URL || 'http://localhost:8000';
 
 const cliente = axios.create({
   baseURL: INFERENCE_URL,
+  ...(process.env.INFERENCE_API_TOKEN
+    ? { headers: { Authorization: `Bearer ${process.env.INFERENCE_API_TOKEN}` } }
+    : {}),
   timeout: 180000,
   maxContentLength: 100 * 1024 * 1024,
   maxBodyLength: 100 * 1024 * 1024,

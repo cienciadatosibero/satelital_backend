@@ -37,6 +37,19 @@ const Sesion = {
     await pool.query('UPDATE sesiones_busqueda SET estado = ? WHERE id = ?', [estado, id]);
   },
 
+  // Mantener el ENUM existente en TiDB: en_progreso, revisada, exportada.
+  // Si queda alguna detección pendiente, la sesión sigue en progreso.
+  // Cuando ya no quedan pendientes, las revisiones están terminadas.
+  async actualizarEstadoSegunRevision(id) {
+    const [rows] = await pool.query(
+      `SELECT COUNT(*) AS pendientes FROM detecciones
+       WHERE sesion_id = ? AND revision = 'pendiente'`, [id]
+    );
+    const estado = Number(rows[0]?.pendientes || 0) === 0 ? 'revisada' : 'en_progreso';
+    await pool.query('UPDATE sesiones_busqueda SET estado = ? WHERE id = ?', [estado, id]);
+    return estado;
+  },
+
   async actualizarTotal(id) {
     await pool.query(
       `UPDATE sesiones_busqueda s
@@ -91,6 +104,15 @@ const Deteccion = {
       [sesionId]
     );
     return rows;
+  },
+
+  async buscarPorId(id) {
+    const [rows] = await pool.query(
+      `SELECT d.id, d.sesion_id, s.usuario_id
+         FROM detecciones d JOIN sesiones_busqueda s ON s.id = d.sesion_id
+        WHERE d.id = ? LIMIT 1`, [id]
+    );
+    return rows[0] || null;
   },
 
   async actualizarRevision(id, revision) {

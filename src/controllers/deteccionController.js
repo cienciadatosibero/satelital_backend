@@ -1,33 +1,62 @@
+const { rutaPeso } = require('../services/modelPathService');
 const { Sesion, Deteccion, Celda } = require('../models/sesionModel');
 const Modelo = require('../models/modeloModel');
 const Inferencia = require('../services/inferenceService');
 const { pixelABoundsLatLng } = require('../services/geoService');
 const { construirZipDataset } = require('../services/exportService');
 const { planificarCeldas, capturarCelda, capturarCentrada, ZOOM_ESCANEO } = require('../services/tileService');
-const { guardarRecorte, guardarDeteccion, borrarSesion } = require('../services/recorteService');
+const { guardarRecorte, guardarDeteccion, borrarSesion, rutaAbsoluta } = require('../services/recorteService');
+const fs = require('fs');
+const { cajaMundial, deduplicar, asociarSegundaPasada, cajaLimitada } = require('../services/detectionQualityService');
+
+// Vuelve a activar el peso persistido en BD después de reinicios del proceso
+// Python. No se debe inferir silenciosamente con otro best.pt.
+async function asegurarModelo(modelo) {
+  if (!modelo) throw new Error('No hay modelo activo en la base de datos');
+  const archivo = rutaPeso(modelo.archivo);
+  if (!archivo) throw new Error(`No está instalado el peso del modelo activo: ${modelo.nombre}`);
+  const estado = await Inferencia.estado();
+  const actual = estado.active_path || estado.model_path;
+  if (!actual || require('path').resolve(actual) !== archivo) {
+    await Inferencia.activarModelo(archivo);
+  }
+}
 
 // POST /api/detectar
 // body: { imagen_base64, bounds:{north,south,east,west}, zoom, confianza, guardar, nombre_sesion }
 // Ejecuta YOLO sobre la captura, georreferencia cada caja y (opcional) crea sesión.
 async function detectar(req, res, next) {
+  let sesionId = null;
   try {
     const { imagen_base64, bounds, zoom, confianza, guardar, nombre_sesion } = req.body;
 
     if (!imagen_base64) {
       return res.status(400).json({ success: false, message: 'Falta la imagen capturada' });
     }
-    if (!bounds || bounds.north == null || bounds.south == null) {
+    if (!bounds || ['north', 'south', 'east', 'west'].some((key) =>
+      !Number.isFinite(Number(bounds[key])) || bounds[key] == null)) {
       return res
         .status(400)
         .json({ success: false, message: 'Faltan los límites geográficos (bounds)' });
     }
 
+    if (Math.abs(Number(bounds.north)) > 85.05112878 || Math.abs(Number(bounds.south)) > 85.05112878 ||
+        Math.abs(Number(bounds.east)) > 180 || Math.abs(Number(bounds.west)) > 180 ||
+        Number(bounds.north) <= Number(bounds.south) || Number(bounds.east) <= Number(bounds.west)) {
+      return res.status(400).json({ success: false, message: 'Coordenadas geográficas inválidas' });
+    }
+    if (confianza != null && (!Number.isFinite(Number(confianza)) || Number(confianza) < 0.05 || Number(confianza) > 0.95)) {
+      return res.status(400).json({ success: false, message: 'Confianza inválida (0.05 a 0.95)' });
+    }
+
     const modeloActivo = await Modelo.buscarActivo();
+    if (!modeloActivo) return res.status(409).json({ success: false, message: 'No hay modelo activo' });
+    await asegurarModelo(modeloActivo);
 
     // 1) Inferencia en el microservicio Python
     const resultado = await Inferencia.detectar({
       imagenBase64: imagen_base64,
-      confianza: Number(confianza) || (modeloActivo?.conf_default ?? 0.25),
+      confianza: confianza == null ? (modeloActivo?.conf_default ?? 0.25) : Number(confianza),
       devolverRecortes: true,
     });
 
@@ -56,7 +85,6 @@ async function detectar(req, res, next) {
     });
 
     // 3) Persistir como sesión si se pidió. Imágenes a DISCO, no a MySQL.
-    let sesionId = null;
     if (guardar) {
       sesionId = await Sesion.crear({
         usuarioId: req.usuario.id,
@@ -65,13 +93,21 @@ async function detectar(req, res, next) {
         bounds,
         zoom,
       });
-      detecciones.forEach((d, i) => {
-        d.recorte_path = guardarRecorte(sesionId, i, d.recorte_base64);
+      // El bbox está definido sobre la imagen COMPLETA. Si guardáramos solo
+      // el recorte YOLO, las etiquetas exportadas tendrían coordenadas inválidas.
+      for (let i = 0; i < detecciones.length; i++) {
+        const d = detecciones[i];
+        d.recorte_path = guardarRecorte(sesionId, i, imagen_base64);
+        d.deteccion_path = await guardarDeteccion(sesionId, i, imagen_base64, {
+          x: d.bbox_x, y: d.bbox_y, w: d.bbox_w, h: d.bbox_h,
+          conf: d.confianza, clase: d.clase,
+        });
         delete d.recorte_base64;
-      });
+      }
       const ids = await Deteccion.crearLote(sesionId, detecciones);
       ids.forEach((id, i) => (detecciones[i].id = id));
       await Sesion.actualizarTotal(sesionId);
+      if (detecciones.length === 0) await Sesion.actualizarEstado(sesionId, 'revisada');
     }
 
     const base = `${req.protocol}://${req.get('host')}`;
@@ -98,6 +134,7 @@ async function detectar(req, res, next) {
 
 async function detectarArea(req, res, next) {
   const t0 = Date.now();
+  let sesionId = null;
 
   // SSE: emitimos progreso celda por celda. El cliente usa fetch + stream.
   res.setHeader('Content-Type', 'text/event-stream');
@@ -113,20 +150,23 @@ async function detectarArea(req, res, next) {
   try {
     const { bounds, lado_px, zoom, confianza, guardar = true, nombre_sesion } = req.body;
 
-    if (
-      !bounds ||
-      bounds.north == null || bounds.south == null ||
-      bounds.east == null || bounds.west == null
-    ) {
+    if (!bounds || ['north', 'south', 'east', 'west'].some((k) =>
+      bounds[k] == null || !Number.isFinite(Number(bounds[k])))) {
       enviar('error', { message: 'Faltan las 4 coordenadas del área (bounds)' });
       return res.end();
     }
-    if (bounds.north <= bounds.south || bounds.east <= bounds.west) {
+    if (Math.abs(bounds.north) > 85.05112878 || Math.abs(bounds.south) > 85.05112878 ||
+        Math.abs(bounds.east) > 180 || Math.abs(bounds.west) > 180 ||
+        Number(bounds.north) <= Number(bounds.south) || Number(bounds.east) <= Number(bounds.west)) {
       enviar('error', { message: 'Coordenadas inválidas: norte>sur y este>oeste' });
       return res.end();
     }
 
-    const conf = Number(confianza) || 0.05; // máxima sensibilidad
+    const conf = confianza == null ? 0.20 : Number(confianza);
+    if (!Number.isFinite(conf) || conf < 0.05 || conf > 0.95) {
+      enviar('error', { message: 'Confianza inválida (se admite de 0.05 a 0.95)' });
+      return res.end();
+    }
 
     // 1) Planificar el barrido a ZOOM FIJO (nítido). El área solo define el
     //    territorio; el zoom NO depende del tamaño del área.
@@ -140,6 +180,7 @@ async function detectarArea(req, res, next) {
       enviar('error', { message: 'No hay modelo activo' });
       return res.end();
     }
+    await asegurarModelo(modeloActivo);
 
     enviar('inicio', {
       total_celdas: plan.total,
@@ -148,7 +189,6 @@ async function detectarArea(req, res, next) {
       zoom: plan.zoom,
     });
 
-    let sesionId = null;
     if (guardar) {
       sesionId = await Sesion.crear({
         usuarioId: req.usuario.id,
@@ -159,130 +199,91 @@ async function detectarArea(req, res, next) {
       });
     }
 
-    // 2) Barrer segmento por segmento
-    const todas = [];
+    // Primera pasada: detectar candidatos sobre teselas con solape, SIN
+    // tomar aún fotografías centradas. Así podemos deduplicar antes de
+    // gastar peticiones de red y llamadas extra al modelo.
+    const candidatos = [];
     const tiemposCelda = [];
-    let contadorPanel = 0;
-
     for (let i = 0; i < plan.celdas.length; i++) {
       const celda = plan.celdas[i];
       const tc = Date.now();
-
-      // Foto del segmento (solo para detectar; NO se guarda)
       const img = await capturarCelda(celda);
-      const resultado = await Inferencia.detectar({
-        imagenBase64: img.base64,
-        confianza: conf,
-        devolverRecortes: false,
+      const r = await Inferencia.detectar({
+        imagenBase64: img.base64, confianza: conf, devolverRecortes: false,
       });
-
-      // 3) Por cada panel: centrar la cámara en él, tomar foto nítida 600x600
-      //    y RE-ANALIZAR esa foto con YOLO para obtener la caja real sobre ella.
-      const detsCelda = [];
-      for (const d of resultado.detections || []) {
-        const { lat, lng } = pixelABoundsLatLng(
-          celda.bounds,
-          resultado.image_width,
-          resultado.image_height,
-          { x: d.x, y: d.y, w: d.w, h: d.h }
-        );
-
-        // Foto centrada en la coordenada del panel
-        const foto = await capturarCentrada(lat, lng, { ladoPx: 600, zoom: plan.zoom });
-
-        // Segundo análisis sobre la foto centrada (caja precisa sobre ESTA imagen)
-        const r2 = await Inferencia.detectar({
-          imagenBase64: foto.base64,
-          confianza: conf,
-          devolverRecortes: false,
-        });
-
-        // Tomamos la detección más cercana al centro (es el panel objetivo)
-        const cxFoto = foto.width / 2;
-        const cyFoto = foto.height / 2;
-        let mejor = null;
-        let mejorDist = Infinity;
-        for (const e of r2.detections || []) {
-          const ex = e.x + e.w / 2;
-          const ey = e.y + e.h / 2;
-          const dist = Math.hypot(ex - cxFoto, ey - cyFoto);
-          if (dist < mejorDist) {
-            mejorDist = dist;
-            mejor = e;
-          }
-        }
-
-        // Caja final: la del segundo análisis si la hay; si no, una centrada
-        const caja = mejor
-          ? {
-              x: Math.round(mejor.x),
-              y: Math.round(mejor.y),
-              w: Math.round(mejor.w),
-              h: Math.round(mejor.h),
-              conf: Number(mejor.confidence.toFixed(4)),
-              clase: mejor.class_name,
-            }
-          : {
-              x: Math.round(cxFoto - d.w / 2),
-              y: Math.round(cyFoto - d.h / 2),
-              w: Math.round(d.w),
-              h: Math.round(d.h),
-              conf: Number(d.confidence.toFixed(4)),
-              clase: d.class_name,
-            };
-
-        const det = {
-          celda_id: null,
-          clase: caja.clase,
-          confianza: caja.conf,
-          lat,
-          lng,
-          bbox_x: caja.x,
-          bbox_y: caja.y,
-          bbox_w: caja.w,
-          bbox_h: caja.h,
-          img_w: foto.width,
-          img_h: foto.height,
-          recorte_base64: foto.base64,
-        };
-
-        if (guardar) {
-          // Imagen limpia (la foto centrada)
-          det.recorte_path = guardarRecorte(sesionId, contadorPanel, det.recorte_base64);
-          // Imagen con el cuadro azul + "clase %" sobre la misma foto
-          det.deteccion_path = await guardarDeteccion(
-            sesionId,
-            contadorPanel,
-            det.recorte_base64,
-            { ...caja }
-          );
-          contadorPanel++;
-          delete det.recorte_base64;
-        }
-        detsCelda.push(det);
+      for (const d of r.detections || []) {
+        if (![d.x, d.y, d.w, d.h, d.confidence].every(Number.isFinite) || d.w <= 0 || d.h <= 0) continue;
+        const { lat, lng } = pixelABoundsLatLng(celda.bounds, r.image_width, r.image_height, d);
+        // Un solape puede producir un centro fuera del área dibujada.
+        if (lat < bounds.south || lat > bounds.north || lng < bounds.west || lng > bounds.east) continue;
+        candidatos.push({ d, celda, lat, lng, cajaMundial: cajaMundial(celda, d) });
       }
-
-      if (guardar && detsCelda.length) {
-        const ids = await Deteccion.crearLote(sesionId, detsCelda);
-        ids.forEach((id, k) => (detsCelda[k].id = id));
-      }
-
-      todas.push(...detsCelda);
-
       const msCelda = Date.now() - tc;
       tiemposCelda.push(msCelda);
-
       enviar('progreso', {
-        celda: i + 1,
-        total_celdas: plan.total,
-        detecciones_en_celda: detsCelda.length,
-        detecciones_acumuladas: todas.length,
+        fase: 'detectando', celda: i + 1, total_celdas: plan.total,
+        detecciones_en_celda: r.detections?.length || 0,
+        detecciones_acumuladas: candidatos.length,
         ms_celda: msCelda,
+      });
+    }
+
+    const unicos = deduplicar(candidatos);
+    enviar('candidatos', { sin_duplicados: unicos.length, totales: candidatos.length });
+    const todas = [];
+    let contadorPanel = 0;
+    for (let i = 0; i < unicos.length; i++) {
+      const { d, lat, lng } = unicos[i];
+      const foto = await capturarCentrada(lat, lng, { ladoPx: 600, zoom: plan.zoom });
+      const r2 = await Inferencia.detectar({
+        imagenBase64: foto.base64, confianza: conf, devolverRecortes: false,
+      });
+      const match = asociarSegundaPasada(r2.detections, d, foto.width, foto.height);
+      // Si la segunda pasada no encuentra la misma clase cercana al centro,
+      // conservar el candidato inicial como pendiente para revisión humana.
+      // No sustituirlo por otro objeto arbitrario de la foto.
+      const elegido = match || {
+        ...d,
+        x: foto.width / 2 - d.w / 2,
+        y: foto.height / 2 - d.h / 2,
+      };
+      const caja = cajaLimitada(elegido, foto.width, foto.height);
+      const coordenadas = match
+        ? pixelABoundsLatLng(foto.bounds, foto.width, foto.height, caja)
+        : { lat, lng };
+      const det = {
+        celda_id: null,
+        clase: caja.clase,
+        confianza: Number(caja.conf.toFixed(4)),
+        lat: coordenadas.lat,
+        lng: coordenadas.lng,
+        bbox_x: caja.x,
+        bbox_y: caja.y,
+        bbox_w: caja.w,
+        bbox_h: caja.h,
+        img_w: foto.width,
+        img_h: foto.height,
+      };
+      if (guardar) {
+        det.recorte_path = guardarRecorte(sesionId, contadorPanel, foto.base64);
+        det.deteccion_path = await guardarDeteccion(sesionId, contadorPanel, foto.base64, caja);
+        const [id] = await Deteccion.crearLote(sesionId, [det]);
+        det.id = id;
+      }
+      contadorPanel++;
+      todas.push(det);
+      enviar('verificacion', {
+        fase: 'verificando', celda: i + 1,
+        total_celdas: unicos.length,
+        detecciones_acumuladas: todas.length,
       });
     }
 
     if (guardar) {
       await Sesion.actualizarTotal(sesionId);
+      // Sin detecciones pendientes: la sesión puede marcarse como revisada.
+      // Si hay candidatos, permanece en_progreso hasta la revisión humana.
+      if (todas.length === 0) await Sesion.actualizarEstado(sesionId, 'revisada');
     }
 
     // Para el frontend: URL absoluta de cada foto centrada
@@ -302,6 +303,8 @@ async function detectarArea(req, res, next) {
     enviar('fin', {
       sesion_id: sesionId,
       total: todas.length,
+      candidatos_brutos: candidatos.length,
+      duplicados_descartados: candidatos.length - unicos.length,
       detecciones: detsSalida,
       cuadricula: {
         cols: plan.cols,
@@ -317,6 +320,9 @@ async function detectarArea(req, res, next) {
     });
     res.end();
   } catch (err) {
+    // El ENUM real de TiDB no tiene 'error': mantener en_progreso para que
+    // pueda revisarse/eliminarse la sesión parcial sin escribir un estado inválido.
+    if (sesionId) console.error(`Escaneo interrumpido; sesión ${sesionId} conservada en en_progreso:`, err.message);
     try {
       enviar('error', { message: err.message || 'Error en el escaneo de área' });
       res.end();
@@ -367,7 +373,13 @@ async function revisarDeteccion(req, res, next) {
     if (!['confirmado', 'descartado', 'pendiente'].includes(revision)) {
       return res.status(400).json({ success: false, message: 'Revisión inválida' });
     }
+    const deteccion = await Deteccion.buscarPorId(id);
+    if (!deteccion) return res.status(404).json({ success: false, message: 'Detección no encontrada' });
+    if (Number(deteccion.usuario_id) !== Number(req.usuario.id) && req.usuario.rol !== 'admin') {
+      return res.status(403).json({ success: false, message: 'No tienes permiso para revisar esta detección' });
+    }
     await Deteccion.actualizarRevision(id, revision);
+    await Sesion.actualizarEstadoSegunRevision(deteccion.sesion_id);
     res.json({ success: true, message: 'Detección actualizada' });
   } catch (err) {
     next(err);
@@ -380,22 +392,32 @@ async function exportar(req, res, next) {
     const { id } = req.params;
     const sesion = await Sesion.buscarPorId(id);
     if (!sesion) return res.status(404).json({ success: false, message: 'Sesión no encontrada' });
-    if (sesion.usuario_id !== req.usuario.id && req.usuario.rol !== 'admin') {
+    if (Number(sesion.usuario_id) !== Number(req.usuario.id) && req.usuario.rol !== 'admin') {
       return res.status(403).json({ success: false, message: 'Sin permiso' });
     }
 
     const confirmadas = await Deteccion.listarConfirmadas(id);
+    if (!confirmadas.length) {
+      return res.status(400).json({ success: false, message: 'Confirma al menos una detección antes de exportar' });
+    }
+    // No generar un ZIP vacío si faltan archivos del disco o del volumen persistente.
+    const faltantes = confirmadas.filter((d) => {
+      const ruta = rutaAbsoluta(d.recorte_path);
+      return !ruta || !fs.existsSync(ruta);
+    });
+    if (faltantes.length) {
+      return res.status(409).json({ success: false, message:
+        `No se puede exportar: faltan ${faltantes.length} imágenes de detecciones confirmadas en el almacenamiento.` });
+    }
 
     const modelo = sesion.modelo_id ? await Modelo.buscarPorId(sesion.modelo_id) : null;
-    await Sesion.actualizarEstado(id, 'exportada');
-
-    // El servicio escribe directamente en la respuesta (stream).
-    // Exporta TODOS los cuadrantes + labels de las detecciones confirmadas.
+    // La tabla real permite 'exportada'; usarla únicamente tras generar el ZIP.
     await construirZipDataset(res, {
       detecciones: confirmadas,
       nombreSesion: sesion.nombre,
       modeloNombre: modelo?.nombre,
     });
+    await Sesion.actualizarEstado(id, 'exportada');
   } catch (err) {
     next(err);
   }
@@ -406,10 +428,12 @@ async function eliminarSesion(req, res, next) {
   try {
     const { id } = req.params;
     const sesion = await Sesion.buscarPorId(id);
-    if (sesion && (sesion.usuario_id === req.usuario.id || req.usuario.rol === 'admin')) {
-      await Sesion.eliminar(id);
-      borrarSesion(id); // borra también los recortes en disco
+    if (!sesion) return res.status(404).json({ success: false, message: 'Sesión no encontrada' });
+    if (Number(sesion.usuario_id) !== Number(req.usuario.id) && req.usuario.rol !== 'admin') {
+      return res.status(403).json({ success: false, message: 'Sin permiso para eliminar esta sesión' });
     }
+    await Sesion.eliminar(id);
+    borrarSesion(id);
     res.json({ success: true, message: 'Sesión eliminada' });
   } catch (err) {
     next(err);

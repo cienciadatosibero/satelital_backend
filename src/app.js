@@ -15,8 +15,9 @@ app.use(morgan('dev'));
 app.use(express.json({ limit: '60mb' }));
 app.use(express.urlencoded({ limit: '60mb', extended: true }));
 
-// Servir recortes guardados en disco (imágenes de detecciones)
-app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
+// Publicar solo las fotos para revisión; NUNCA exponer uploads/weights.
+// Las imágenes permanecen accesibles por URL a quien conozca su enlace.
+app.use('/uploads/recortes', express.static(path.join(__dirname, '..', 'uploads', 'recortes')));
 
 app.use('/api', rutas);
 

@@ -3,7 +3,7 @@ require('./config/db'); // dispara la prueba de conexión
 
 const PORT = process.env.PORT || 3000;
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 API del Generador de Datasets Satelitales en http://localhost:${PORT}`);
   console.log(`   Microservicio de inferencia: ${process.env.INFERENCE_URL || 'http://localhost:8000'}`);
 });

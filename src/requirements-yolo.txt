@@ -2,3 +2,5 @@ ultralytics
 pillow
 requests
 numpy
+fastapi
+uvicorn[standard]
