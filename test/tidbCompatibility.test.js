@@ -67,7 +67,7 @@ test('setup-db nunca desactiva todos los modelos existentes', () => {
 test('modelo de fábrica best.pt se puede localizar sin tocar uploads', () => {
   const { rutaPeso, esPesoSubido } = require('../src/services/modelPathService');
   const ruta = rutaPeso('best.pt');
-  assert.ok(ruta && ruta.endsWith('/src/models/best.pt'), 'Debe localizar el modelo incluido en el repositorio');
+  assert.equal(ruta, path.join(__dirname, '..', 'src', 'models', 'best.pt'), 'Debe localizar el modelo incluido en el repositorio en Windows, Linux y macOS');
   assert.equal(esPesoSubido(ruta), false);
   assert.equal(rutaPeso('../best.pt'), null);
   assert.equal(rutaPeso('/etc/passwd'), null);

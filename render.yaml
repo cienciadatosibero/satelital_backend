@@ -1,0 +1,30 @@
+services:
+  - type: web
+    name: satdataset-api
+    runtime: node
+    buildCommand: npm ci
+    startCommand: npm run api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: "4000"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: satdataset
+      - key: DB_SSL
+        value: "true"
+      - key: JWT_SECRET
+        generateValue: true
+      - key: JWT_EXPIRES
+        value: 8h
+      - key: INFERENCE_URL
+        sync: false
+      - key: INFERENCE_API_TOKEN
+        sync: false
