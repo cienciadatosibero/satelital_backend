@@ -13,7 +13,8 @@ const almacenamiento = require('../controllers/almacenamientoController');
 const Inferencia = require('../services/inferenceService');
 
 // ---------- Autenticación ----------
-router.post('/auth/login', auth.login);
+router.post('/auth/login', auth.login); // Windows (admin + invitado)
+router.post('/auth/admin/login', auth.loginAdmin); // Web (solo admin)
 router.get('/auth/perfil', requireAuth, auth.perfil);
 
 // ---------- Usuarios (solo admin) ----------
